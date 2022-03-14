@@ -1,0 +1,554 @@
+---
+title: "Final Report - Effects of vaccination and stringency policies in COVID-19, a two-way ANOVA analysis based on OWID data"
+author: "Xue Sheng - 920231742 - Team 8"
+date: "03/13/2022"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H', warning = FALSE, message=FALSE, echo=FALSE)
+```
+
+## Abstract
+
+This study will conduct an statistical analysis on Effects of vaccination and stringency policies in COVID-19 based on an OWID data set. There are 7 parts of the main text:
+
+1. Introduction of the data set and raising the questions of interest.
+2. Background of Corona-Virus pandemic and fundamental development of related researches.
+3. Exploratory analysis on the data set, categorizing the covariates and visualizing some patterns of the data.
+4. Inferential analysis involving variable normal transformation, main effects plots, and ANOVA model construction, fitting and interpretation.
+5. Model diagnostics, assumptions validation and model optimization.
+6. Sensitivity tests on different time period and comparing the results.
+7. Discussion on the conclusions, caveats and potential future study.
+
+
+## 1. Introduce the Data Set and Questions of Interest
+
+This analysis would utilize the data set from Our World in Data. The data sets and information can be found at [covid-19-data/public/data/](https://github.com/owid/covid-19-data/tree/master/public/data) for reference. This data set contains a lot of information ranging from country, continent, cases, deaths, vaccination, stringency index to even population and median age. Based on these variables, we are curious about the relationship between new cases/deaths rates and plausible factors. To study about their relationships, we will utilize two-way ANOVA and try to deduct some causal inferences.
+
+Below are the range of the date, continents involved and number of countries involved in this data set.
+
+```{r}
+library(tidyverse)
+library(Hmisc)
+library(lubridate)
+library(ggplot2)
+library(gplots)
+library(ggpubr)
+library(gtsummary)
+library(SuppDists)
+library(kableExtra)
+library(broom)
+```
+
+```{r}
+owid = read_csv("owid-covid-data.csv")
+my.owid = owid[, c("location", "continent", "date", "total_cases_per_million", "new_cases_per_million", "new_cases", 
+                 "new_deaths", "total_deaths_per_million", "new_deaths_per_million", "people_fully_vaccinated_per_hundred",
+                 "stringency_index", "population_density", "median_age")]
+my.owid = my.owid[!is.na(my.owid$people_fully_vaccinated_per_hundred), ]
+my.owid = my.owid[!is.na(my.owid$stringency_index), ]
+
+knitr::kable(range(my.owid$date), "html", col.names = c("Range of Date"))%>% 
+kable_styling()
+
+knitr::kable(table(my.owid$continent), "html", col.names = c("Continent", "Number of Observations"))%>% 
+kable_styling()
+
+knitr::kable(length(unique(my.owid$location)), "html", col.names = c("Number of Unique Countries"))%>% 
+kable_styling()
+```
+
+Regarding the data cleaning, we will first group each country's new cases, new deaths, fully vaccination rate and stringency index by each month. The used variables and its description are presented below.
+
+* **new cases** means new_cases_per_million: New confirmed cases of COVID-19 per 1,000,000 people. Counts can include probable cases, where reported.
+* **new deaths** means new_deaths_per_million: New deaths attributed to COVID-19 per 1,000,000 people. Counts can include probable deaths, where reported.
+* **fully vaccination rate** means people_fully_vaccinated_per_hundred: Total number of people who received all doses prescribed by the initial vaccination protocol per 100 people in the total population
+* **stringency index** means Government Response Stringency Index: composite measure based on 9 response indicators including school closures, workplace closures, and travel bans, re-scaled to a value from 0 to 100 (100 = strictest response)
+
+For cases and deaths, they will be summed monthly; for vaccination and stringency index, they will be taken mean. Then each country is an individual observation with total new cases and new deaths in one month as its response variables, and with vaccination rates and stringency index as its factor variables.
+
+### Questions of interest
+
+This project is going to research bout **whether mean case rates and mean death rates are different across different level of vaccination rates** and **whether Government Response Stringency Index can influence the mean case rates and mean death rates**. From preliminary data visualization, high fully vaccination rates tend to have lower slope rates of deaths to cases and have lower deaths rates. Though the high fully vaccination rates also tend to have higher case rates. Consequently, there might exist other factors other than vaccinations in deciding the mean case rates. Then a two-way ANOVA model is possibly reasonable to research about these questions. 
+
+By adopting a two-way ANOVA model and choosing fully vaccinations rate and Government Response Stringency Index as the second accessible factor, I can learn about the main effect of both vaccination rates and PHSM Severity. For a certain country, we can obtain the cases and deaths at its current vaccination rates. To make causal inference, every country can be treated as $i$th individual and different levels of vaccination rates or Government Response Stringency Index can be viewed as a treatment.
+
+
+## 2. Background of the SARS-CoV-2 pandemic
+
+Since vaccines for SARS-CoV-2 have been universally provided all over the world, the effectiveness of vaccines is often a concerning point of the public. The COVID‑19 vaccines are widely credited for their role in reducing the severity and death caused by COVID‑19.[1] Many countries have implemented phased distribution plans that prioritize those at highest risk of complications, such as the elderly, and those at high risk of exposure and transmission, such as healthcare workers. Available data show that fully vaccinated individuals and those previously infected with SARS-CoV-2 have a low risk of subsequent infection for at least 6 months.[2] By exploring the accessible data sets from online sources, the project wants to make use of the COVID-19 cases data, vaccination date and the government stringency policies index, in order to answer the questions about the effectiveness of vaccines and the effectiveness of government stringency policies.
+
+According to [CDC](https://www.cdc.gov/coronavirus/2019-ncov/variants/about-variants.html?CDC_AA_refVal=https%3A%2F%2Fwww.cdc.gov%2Fcoronavirus%2F2019-ncov%2Fvariants%2Fvariant.html), viruses constantly change through mutation and sometimes these mutations result in a new variant of the virus. Faced with various variants, vaccination seems to be always hysteretic. But vaccines are still able to reduce the risk of severe illness, hospitalization, and death from COVID-19. Consequently, the relationship between vaccination and stringency policies and realistic cases/deaths data should be studied.
+
+
+## 3. Exploratory Data Analysis
+
+```{r}
+# Sum the new cases/death rate for each country monthly and take the mean vaccination rate and stringency index within the mean
+ta1 <- my.owid %>%
+  mutate(month = format(as.Date(date), "%Y-%m")) %>%
+  group_by(location, continent, month) %>%
+  summarise(
+    new_cases  = sum(new_cases_per_million, na.rm = T),
+    new_deaths = sum(new_deaths_per_million, na.rm = T),
+    vac = mean(people_fully_vaccinated_per_hundred, na.rm = T),
+    strin = mean(stringency_index, na.rm = T)
+  )
+```
+
+This part will present some visualization plots to provide a direct intuition of the data.
+
+```{r}
+# Categorize fully vaccination rates and stringency index
+ta1$vac_level = cut(ta1$vac, c(-0.1, 20, 45, 65, 100))
+ta1$str_level = cut2(ta1$strin, g = 4)
+
+my_theme = theme(
+  text = element_text(size=10), axis.text.x = element_text(angle=90)
+)
+
+a = ta1 %>%
+  group_by(vac_level, month) %>%
+  summarise(
+    count = n()
+  ) %>%
+  ggplot(aes(fill = vac_level, y = count, x = month)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = c("wheat", "pink", "thistle", "orchid4")) +
+  labs(title = "StackBar-plot of Fully Vaccination Rate", y = "Count of obs.") +
+  my_theme
+
+b = ta1 %>%
+  group_by(str_level, month) %>%
+  summarise(
+    count = n()
+  ) %>%
+  ggplot(aes(fill = str_level, y = count, x = month)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = c("wheat", "pink", "thistle", "orchid4")) +
+  labs(title = "StackBar-plot of Stringency Index", y = "Count of obs.") +
+  my_theme
+
+c = ta1 %>%
+  ggplot(aes(x = month, y = vac)) +
+  geom_boxplot(fill = 'honeydew4') +
+  labs(title = "Box-plot of Fully Vaccination Rate distr.", y = "Fully Vaccination Rate") +
+  my_theme
+
+d = ta1 %>%
+  ggplot(aes(x = month, y = strin)) +
+  geom_boxplot(fill = 'burlywood') +
+  labs(title = "Box-plot of Stringency Index distr.", y = "Stringency Index") +
+  my_theme
+
+ggarrange(a, b, c, d, ncol = 2, nrow = 2)
+```
+
+From above distribution plots of two covariates, it can be found that fully vaccination rate has a wider range than stringency level while in the earlier months, most countries have fully vaccinations rates below 25%. The latter has a closer distributions across months starting from 2021-07. To classify these two covariates into groups, cut the fully vaccination rates into 4 groups by the absolute values (adjust a little the cutting values to balance the cells in later months) and cut the stringency indexed into 4 groups with similar sizes. Also, vaccination rates across countries are increasing obviously while stringency indexes are decreasing mildly.
+
+The basic summary statistics of the response variables are below. The median value are all much lower than mean value so the distributions are very concentrated on the left side The new case mortality rate (per thousand) is the ratio of new deaths to new cases within each month multiplied by 1000. There are some NA and Inf in them and we will ignore them in later analysis.
+
+
+```{r}
+ta1$new_cm_rate = ta1$new_deaths/ta1$new_cases*1000
+
+summ = do.call(cbind, lapply(ta1[, c("new_cases", "new_deaths", "new_cm_rate")], summary))
+
+knitr::kable(summ, "html", 
+             col.names = c("Monthly New Case Rate (per million)", "Monthly New Death Rate (per million)", 
+                           "Monthly Case Mortality Rate (per thousand)"),
+             digits = c(0, 0, 0)) %>% 
+kable_styling()
+```
+
+Then let's take a look at the distributions of new cases and new deaths across different months. Since the distributions of values, setting a limit on y-axis can better display the distributions. From the plots, omitting 2022-03 because of little data, it can be found that mean new cases have decreased during 2021 and increased a little starting from 2021, so have new deaths.
+
+```{r}
+e = ta1 %>%
+  ggplot(aes(x = month, y = new_cases)) +
+  geom_boxplot(fill = 'steelblue') +
+  labs(title = "Box-plot of new cases", y = "New cases per million") +
+  ylim(0, 10000) +
+  my_theme
+
+f = ta1 %>%
+  ggplot(aes(x = month, y = new_deaths)) +
+  geom_boxplot(fill = 'lavender') +
+  labs(title = "Box-plot of new deaths", y = "New deaths per million") +
+  ylim(0, 200) +
+  my_theme
+
+ggarrange(e, f, ncol = 2, nrow = 1)
+```
+
+Third, take a look at the scatter plots of response variables and vs. covariates. As time passed by since 2020 December, vaccines rates increased universally and stringency index decreased universally. As for new cases and new deaths, we can also tell from the plot that new cases are increasing in 2022 dramatically but the new slope of deaths to cases seems to become more gentle.
+
+```{r}
+ta1 %>%  
+  ggplot(aes(x = new_cases, y = new_deaths, color = vac)) +
+  geom_point(size = 0.8) +
+  scale_fill_gradient(low="red", high="yellow") +
+  labs(title = "New Cases vs. Deaths under fully vaccination rates") +
+  facet_wrap(~ month)
+ 
+ta1 %>%  
+  ggplot(aes(x = new_cases, y = new_deaths, color = strin)) +
+  geom_point(size = 0.8) +
+  scale_fill_gradient(low="red", high="yellow") +
+  labs(title = "New Cases vs. Deaths under stringency policies") +
+  facet_wrap(~ month)   
+#hist(my.owid$total_cases_per_million)
+```
+
+
+## 4. Inferential Analysis
+
+First let us check the normal distribution of response variables. After log transformation, the distribution is more close to normal distribution. From now on, we will use log transformation of monthly case rate (per million) and monthly case mortality rate (per thousand) as two response variables.
+
+```{r}
+ta.m = ta1
+ta.m$new_cases_log = log(ta.m$new_cases)
+ta.m = ta.m[!ta.m$new_cases_log == -Inf, ]
+
+ta.m$new_cm_rate_log = log(ta.m$new_cm_rate)
+ta.m = ta.m[!ta.m$new_cm_rate_log == -Inf, ]
+ta.m = ta.m[!ta.m$new_cm_rate_log == Inf, ]
+
+par(mfrow=c(2,2))
+hist(ta.m$new_cases)
+hist(ta.m$new_cases_log)
+hist(ta.m$new_cm_rate)
+hist(ta.m$new_cm_rate_log)
+```
+
+Then this study will use main plots to conduct preliminary investigation into the effects of fully vaccination rates and stringency policies.
+
+### Main effect plots
+
+```{r}
+ta.m1 = ta.m
+
+par(mfrow=c(2,2))
+plotmeans(new_cases_log ~ vac_level, data = ta.m1, xlab="Vaccination rate", ylab="Monthly new case rate (log)", cex.lab=1,
+          main="Main effect of Vaccination")
+
+plotmeans(new_cases_log ~ str_level, data = ta.m1, xlab="Stringency index", ylab="Monthly new case rate (log)", cex.lab=1,
+          main="Main effect of Stringency")
+
+interaction.plot(ta.m1$vac_level, ta.m1$str_level, ta.m1$new_cases_log, cex.lab=1,
+                 xlab='Vaccination rate', ylab="Monthly new cases rate (log)",main="Interaction effect")
+```
+
+
+```{r}
+par(mfrow=c(2,2))
+plotmeans(new_cm_rate_log ~ vac_level, data = ta.m1, xlab="Vaccination rate", ylab="Monthly case mortality rate (log)", cex.lab=1,
+          main="Main effect of Vaccination")
+
+plotmeans(new_cm_rate_log ~ str_level, data = ta.m1, xlab="Stringency index", ylab="Monthly case mortality rate (log)", cex.lab=1,
+          main="Main effect of Stringency")
+
+interaction.plot(ta.m1$vac_level, ta.m1$str_level, ta.m1$new_cm_rate_log, cex.lab=1,
+                 xlab='Vaccination rate', ylab="Monthly case mortality rate (log)", main="Interaction effect")
+```
+
+From the main effects plots, it can be indicated that different vaccination rate level is sufficient in mean of monthly case rates while stringency level is not so sufficient. The similar situation exists in mean of monthly case mortality rates. However, the vaccination rate level seems to have opposite effects on these two response mean.
+
+In order to further identify the group effects, we adopt a two-way ANOVA model with fully vaccination rate level and stringency level as two factors.
+
+### The initial model expression
+
+There are the **two-way full model** and its constraints as below.
+
+Two response variables are monthly new case rate (per million) and monthly case mortality rate (per thousand).
+
+For the monthly new case rate (per million) we have the expression: 
+
+$Y_{ijk} = \mu_{\cdot\cdot} + \alpha_i+\beta_j + (\alpha\beta)_{ij}+\epsilon_{ijk}, \ k=1,\ldots, n_{ij}, i=1, \ldots,4, j=1, \ldots, 4$
+
+For the monthly case mortality rate (per thousand) we also have the expression: 
+
+$Y_{ijk} = \mu_{\cdot\cdot} + \alpha_i+\beta_j + (\alpha\beta)_{ij}+\epsilon_{ijk}, \ k=1,\ldots, n_{ij}, i=1, \ldots,4, j=1, \ldots, 4$
+
+$Y_{ijk}$ represents the monthly case rate and monthly case mortality rate under different groups of fully vaccination levels and stringency levels, and in both expressions:
+
+* $\mu_{\cdot\cdot} = \sum_{i=1}^a \sum_{j=1}^b w_{ij} \mu_{ij}$, $\ w_{ij} = \frac{n_{ij}}{n_T}$, $\mu_{ij}$ is the cell mean;
+* $\mu_{i\cdot} = \frac{\sum_{j=1}^b w_{ij} \mu_{ij}}{\sum_{j=1}^b w_{ij}}$, $\mu_{\cdot j} = \frac{\sum_{i=1}^a w_{ij} \mu_{ij}}{\sum_{i=1}^a w_{ij}}$;
+* $\alpha_i = \mu_{i\cdot} - \mu_{\cdot\cdot},\ \beta_j = \mu_{\cdot j} - \mu_{\cdot\cdot},\ (\alpha\beta)_{ij}  = \mu_{ij} - \mu_{i\cdot} - \mu_{\cdot j} + \mu_{\cdot\cdot}$;
+
+and both with constraints: 
+
+* $\sum_{i=1}^a \alpha_i  = \sum_{j=1}^b \beta_j=0$, $\sum_{i=1}^a (\alpha\beta)_{ij}  = 0$ for any j;
+* $\sum_{j=1}^b (\alpha\beta)_{ij}  = 0$ for any i, j;
+* $\{\epsilon_{ijk}\}$ are $i.i.d.  N(0,\sigma^2)$ for all i, j ,k.
+
+* The index $i$ represents the fully vaccination level group: [0,25] ($i=1$), (25,50] ($i=2$), (50,75] ($i=3$), (75,100] ($i=4$); the index $j$ represents the stringency level groups:  [0,40.1) ($j=1$), [40.1,51.6) ($j=2$), [51.6,64.8) ($j=3$), [64.8,96.3] ($j=4$); $(\alpha\beta)_{ij}$ is an interaction term of vaccination level and stringency level.
+
+
+Fitting the model using the data that has been cleaned and transformed. Below is the result of the full model for monthly cases per million.
+
+```{r}
+aov1 = aov(new_cases_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m)
+summary(aov1)[[1]] %>%
+  kbl(caption = "ANOVA Table for Monthly New Case Rate") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+From the anova summary result, both fully vaccination rate level and stringency level are sufficient at level 0.001 in deciding a different mean of monthly cases rate (per million), so is their interaction term.
+
+**Hypothesis test**
+
+Carry out a test to decide if the effect of the stringency level is present on the full data set, at the significance level $\alpha=0.01$. 
+	
+There is the **Null hypothesis**: $H_0: \beta_j = 0 \ \ and \ \ (\alpha\beta)_{ij} = 0  \ \ \forall i,j$
+
+v.s. **Alternative hypothesis**: $H_1: \ \ not \ \ all \ \ \beta_j  \ \ or \ \ (\alpha\beta)_{ij} \ \ are \ \ zero$
+
+```{r}
+full1 = lm(new_cases_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m)
+redu1 = lm(new_cases_log ~ vac_level, data = ta.m)
+anova(redu1, full1) %>%
+  kbl(caption = "ANOVA Table for Test of Stringency Effect in Monthly New Case Rate") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+Based on the p-value of F-test, we can reject the null hypothesis at level 0.001. That is to say, the stringency policies and its interaction term have some sufficient effect in deciding monthly cases rate (per million).
+
+We do the similar model fitting on monthly case mortality rates and similar hypothesis test on effect of stringency level and its interaction.
+
+```{r}
+aov2 = aov(new_cm_rate_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m)
+summary(aov2)[[1]] %>%
+  kbl(caption = "ANOVA Table for Monthly Case Mortality Rate") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+From the anova summary result, both fully vaccination rate level and the interaction term are sufficient at level 0.001 in deciding a different mean of new case mortality rate (per thousand), yet the stringency level is not sufficient.
+
+```{r}
+full2 = lm(new_cm_rate_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m)
+redu2 = lm(new_cm_rate_log ~ vac_level, data = ta.m)
+anova(redu2, full2) %>%
+  kbl(caption = "ANOVA Table for Test of Stringency Effect in Monthly Case Mortality Rate") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+Based on the p-value of F-test, we can reject the null hypothesis at level 0.001. That is to say, the stringency policies and its interaction term have some sufficient effect in deciding monthly case mortality rate (per thousand).
+
+
+## 5. Model Diagnotics
+
+Below are diagnosis plots of two anova models. It can be concluded that there are no obvious violations of normal distributions of error terms. Yet further investigation is needed for checking model assumptions.
+
+```{r}
+par(mfrow=c(2,2))
+plot(aov1, cex.lab=1.2, which=1:2)
+plot(aov2, cex.lab=1.2, which=1:2)
+```
+
+
+For the equal variance, we run some tests for below hypothesis.
+
+Null hypothesis $H_0: \sigma_{1,1}=\cdots =\sigma_{a,b}$; the alternative $H_a:$ not all $\sigma$s are equal.
+
+**Levene test** for monthly new case rate model: the results below shows that we should reject null hypothesis for monthly new case rate model.
+
+```{r}
+ta.m$res_abs1 = abs(aov1$residuals)
+full.L = aov(res_abs1 ~ vac_level + str_level, data = ta.m)
+redu.L = aov(res_abs1~ 1 , data = ta.m)
+anova(full.L, redu.L) %>%
+  kbl(caption = "Levene Test for Equal Variance in New Case Rate") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+**Levene test** for monthly case mortality rate model: the result below shows that we should reject null hypothesis for monthly case mortality rate model at level 0.05.
+
+```{r}
+ta.m$res_abs2 = abs(aov2$residuals)
+full.L = aov(res_abs2 ~ vac_level + str_level, data = ta.m)
+redu.L = aov(res_abs2~ 1 , data = ta.m)
+anova(full.L, redu.L) %>%
+  kbl(caption = "Levene Test for Equal Variance in Case Mortality Rate") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+**Hartley’s Fmax test**: the result show that both H* value are greater than Critical Value so we should reject null hypothesis for monthly new case rate model and monthly case mortality rate at level 0.05.
+
+```{r}
+case_var = summarise(group_by(ta.m, vac_level, str_level), var = var(new_cases_log))[, c("var", "vac_level", "str_level")]
+mor_var = summarise(group_by(ta.m, vac_level, str_level), var = var(new_cm_rate_log))[, c("var", "vac_level", "str_level")]
+
+H.stat1 = max(case_var$var)/min(case_var$var)
+H.stat2 = max(mor_var$var)/min(mor_var$var)
+n = nrow(ta.m)
+k = nrow(case_var)
+critical.value = qmaxFratio(0.95, df = n/k-1, k=k)
+
+H.test = c("H* value 1" = H.stat1, "H* value 2" = H.stat2, "Critical value" = critical.value)
+H.test %>%
+  kbl(caption = "Hartley’s Fmax test") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+After the equal variance tests, let's use weighted least squares to adjust the model. Then we fit the ANOVA model again and the effects of two factors are similarly significant as the model before.
+
+```{r}
+case_var$weight = 1 / sqrt(case_var$var)
+mor_var$weight = 1 / sqrt(mor_var$var)
+ta.m2 = left_join(ta.m, case_var, by = c("vac_level", "str_level"))
+ta.m2 = left_join(ta.m2, mor_var, by = c("vac_level", "str_level"))
+```
+
+```{r}
+aov1_w = aov(new_cases_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m2, weights=ta.m2$weight.x)
+summary(aov1_w)[[1]] %>%
+  kbl(caption = "Weighted ANOVA Model Result of New Case Rate") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r}
+aov2_w = aov(new_cm_rate_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m2, weights=ta.m2$weight.y)
+summary(aov2_w)[[1]] %>%
+  kbl(caption = "Weighted ANOVA Model Result of Case Mortality Rate") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+Then we use **Tukey test** to find the largest difference of the mean values among different groups.
+
+Below two tables show each vaccination level group's differences in monthly new case rate and case mortality rate. For monthly new case rate, the largest differences of mean exists in vaccination rate level (65,100] and (-0.1,20]  For the case mortality rate, the largest difference also exists within these two groups. Yet the differences are in opposite direction. 
+
+```{r}
+TukeyHSD(aov1_w, "vac_level", conf.level = 1-0.05) %>%
+  broom::tidy()%>%
+  kable("html", caption = "Tukey Table for Vaccination in Monthly New Case Rate")%>%
+  kable_styling()
+```
+
+
+```{r}
+TukeyHSD(aov2_w, "vac_level", conf.level = 1-0.05) %>%
+  broom::tidy()%>%
+  kable("html", caption = "Tukey Table for Vaccination in Monthly Case Mortality Rate")%>%
+  kable_styling()
+```
+
+
+Below two tables show each stringency level group's differences in monthly new case rate and case mortality rate. The largest difference of mean new case rate exists in stringency level [64.8,96.3] and [ 0.0,40.1). Since the interval of stringency levels' groups of differences in mean case mortality rates are all involving zero, we think their difference of mean not significant at level 0.05 so here did not show the result of the stringency level's Tukey test results.
+
+```{r}
+TukeyHSD(aov1_w, "str_level", conf.level = 1-0.05) %>%
+  broom::tidy()%>%
+  kable("html", caption = "Tukey Table for Stringency in Monthly New Case Rate")%>%
+  kable_styling()
+```
+
+```{r}
+TukeyHSD(aov2_w, "str_level", conf.level = 1-0.05) %>%
+  broom::tidy()%>%
+  kable("html", caption = "Tukey Table for Stringency in Monthly Case Mortality Rate")%>%
+  kable_styling()
+```
+
+## 6. Sensitivity Test
+
+Considering the characteristics of the data set, we fit the model using several time periods to compare the effects. After trying different time periods, quarterly segment is a suitable method to spot the different effects, so it could be concluded that the development of virus may have a quarter pattern.
+
+```{r}
+ta.m1.1 = ta.m2[ta.m$month > '2021-12', ]
+aov1.1 = aov(new_cases_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.1, weight = ta.m1.1$weight.x)
+tbl1.1 = tbl_regression(aov1.1)
+
+ta.m1.2 = ta.m2[ta.m$month >= '2021-10' & ta.m$month <= '2021-12', ]
+aov1.2 = aov(new_cases_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.2, weight = ta.m1.2$weight.x)
+tbl1.2 = tbl_regression(aov1.2)
+
+ta.m1.3 = ta.m2[ta.m$month >= '2021-07' & ta.m$month <= '2021-09', ]
+aov1.3 = aov(new_cases_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.3, weight = ta.m1.3$weight.x)
+tbl1.3 = tbl_regression(aov1.3)
+
+ta.m1.4 = ta.m2[ta.m$month >= '2021-04' & ta.m$month <= '2021-06', ]
+aov1.4 = aov(new_cases_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.4, weight = ta.m1.4$weight.x)
+tbl1.4 = tbl_regression(aov1.4)
+
+ta.m1.5 = ta.m2[ta.m$month <= '2021-03', ]
+aov1.5 = aov(new_cases_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.5, weight = ta.m1.5$weight.x)
+tbl1.5 = tbl_regression(aov1.5)
+
+ tbl_merge(
+    tbls = list(tbl1.1, tbl1.2, tbl1.3, tbl1.4, tbl1.5),
+    tab_spanner = c("**2022**", "**2021 Q4**", "**2021 Q3**", "**2021 Q2**", "**2021 Q1**")
+  )
+```
+
+Above table presents the results of fitting a weighted ANOVA model of **new case rate** on the data from different periods. They produce a different effect with the full model. Based on the different results within these time periods, we can tell that the effects are still all sufficient within the period from 2021-07 to 2021-09 (2021 Q3). During other periods, the effects of two factors are not all sufficient. In the earlier months (before the end of 2021-06), the stringency policies have more significant effects in deciding mean new case rates. To explain this, we might have to find the pattern of several main variants' development timeline. It is possible that the vaccination rates and stringency policies  perform differently to variants.
+
+```{r}
+aov2.1 = aov(new_cm_rate_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.1, weight = ta.m1.1$weight.y)
+tbl2.1 = tbl_regression(aov2.1)
+
+aov2.2 = aov(new_cm_rate_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.2, weight = ta.m1.2$weight.y)
+tbl2.2 = tbl_regression(aov2.2)
+
+aov2.3 = aov(new_cm_rate_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.3, weight = ta.m1.3$weight.y)
+tbl2.3 = tbl_regression(aov2.3)
+
+aov2.4 = aov(new_cm_rate_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.4, weight = ta.m1.4$weight.y)
+tbl2.4 = tbl_regression(aov2.4)
+
+aov2.5 = aov(new_cm_rate_log ~ vac_level + str_level +  vac_level:str_level, data = ta.m1.5, weight = ta.m1.5$weight.y)
+tbl2.5 = tbl_regression(aov2.5)
+
+tbl_merge(
+    tbls = list(tbl2.1, tbl2.2, tbl2.3, tbl2.4, tbl2.5),
+    tab_spanner = c("**2022**", "**2021 Q4**", "**2021 Q3**", "**2021 Q2**", "**2021 Q1**")
+  )
+```
+
+Above table presents the results of fitting a weighted ANOVA model of **case mortality rate** on the data from different periods. They also produce a different effect with the full model. Based on the different results within these time periods, we can tell that the effect of vaccination level are all sufficient in deciding a mean case mortality rate within all periods. As for stringency policies, the effects are not sufficient all the time. In the middle periods (from 2021-04 to 2021-12), the stringency policies have significant effects in deciding mean case mortality rates. For interaction term of vaccination rates and stringency policies, from 2021-07 to 2021-09, its effect is the most significant among all periods.
+
+
+## 7. Discussion and Further Study
+
+### Conclusion and discussion
+
+Based on exploratory data analysis and inferential analysis on the data set regarding cases/deaths rate, vaccination rates and stringency index from Our World in Data, it can concluded that different fully vaccination rate levels and stringency policies levels are sufficient in deciding a country's monthly case rate and case mortality rate. 
+
+In general, higher vaccination rate levels have higher case rates but have lower case mortality rates. Higher case rates in high fully vaccination rates might an evidence of vaccination's ineffectiveness in reducing transmission of virus variants. It might be also because of the vaccination rates are related to a country's economic situation, followed by that with higher vaccination rates, people have higher demands of social contacts and work exposure. Across different stringency index levels, the differences in monthly case rates and case mortality rates are less obvious. But the interaction of these two factors are also significant, so stringency probably have an effect through combination with fully vaccination rates. 
+
+As for more detailed conclusion within the groups, it has been found that:
+
+* Between different fully vaccination rate groups, fully vaccination rate greater than 65% and fully vaccination rate smaller than 20% have the largest and significant (at level 0.001) difference in mean new case rate and case mortality rate, but their differences are in the opposite direction.
+* Between different stringency index groups, stringency index greater than 64.8 and stringency index smaller than 40.1 have the largest and significant (at level 0.001) difference in mean new case rate. Yet for Monthly Case Mortality Rate, the differences across all stringency groups are not significant.
+
+### Caveats of the study
+
+This study has not involved causal inference. The reason is that after investigation into the data set, the assumption of causal inference is hard to satisfied. For each country, its fully vaccination rate is highly related to the attitude of the authority and the people towards the virus and also the health facility accessibility. For countries with higher vaccination rates, they tend to have more strict policies and more accessible health resources, which will influence the infection and death rates. What's more, higher vaccination rates mean the country's people with agile attitudes towards virus so the people will have various limitation choices in their daily life, which will influence the infection too. That makes the independence between treatment type and treatment result violated. As for the stringency policies, there are also dependence between the treatment type and treatment result. In many countries, government policies typically react to the spread of the virus, so it is hard to assume a randomization of stringency policies index.
+
+However, during different periods of pandemic development, the effects of these two factors are varying. Further study about the variants development and spread is needed to investigate the sensitivity test results. What's more, there is usually a time lag between infection and death, but here by summing them by month, the time lag has a smaller influence on the case mortality rate. Nevertheless, for deeper study, the case mortality should be treated with appropriate time lag and the results could be compared to investigate its influence.
+
+
+### Reference
+
+[1] Vergano D (5 June 2021). "COVID-19 Vaccines Work Way Better Than We Had Ever Expected. Scientists Are Still Figuring Out Why". BuzzFeed News. Retrieved 24 June 2021.
+
+[2] Coronavirus Disease 2019 (COVID-19)". Centers for Disease Control and Prevention (CDC). 11 February 2020.
+
+[3] https://www.cdc.gov/coronavirus/2019-ncov/variants/about-variants.html?CDC_AA_refVal=https%3A%2F%2Fwww.cdc.gov%2Fcoronavirus%2F2019-ncov%2Fvariants%2Fvariant.html
+
+[4] Chen, S. (n.d.). Notebook on nbviewer. Jupyter Notebook Viewer. Retrieved February 17, 2022, from https://nbviewer.org/github/ChenShizhe/StatDataScience/blob/master/Notes/Chapter4ANOVAII.ipynb
+
+### Session info {-}
+
+```{r}
+sessionInfo()
+```
+
+### Appendix: All code for this report
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+
+```
